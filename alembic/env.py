@@ -7,7 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 from app.core.config import get_settings
 from app.database.base import Base
-from app.models import Post  # noqa: F401
+from app.models import Post, ResearchItem, Schedule  # noqa: F401
 
 config = context.config
 

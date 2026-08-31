@@ -16,10 +16,18 @@ class Settings:
     """Runtime settings loaded from environment variables."""
 
     database_url: str
+    research_provider: str
+    research_timeout_seconds: float
+    research_window_days: int
 
 
 @lru_cache
 def get_settings() -> Settings:
     load_dotenv()
     database_url = os.environ["DATABASE_URL"]
-    return Settings(database_url=database_url)
+    return Settings(
+        database_url=database_url,
+        research_provider=os.getenv("RESEARCH_PROVIDER", "arxiv"),
+        research_timeout_seconds=float(os.getenv("RESEARCH_TIMEOUT_SECONDS", "10")),
+        research_window_days=int(os.getenv("RESEARCH_WINDOW_DAYS", "30")),
+    )
