@@ -2,11 +2,54 @@
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Protocol
 from xml.etree import ElementTree
 
 import requests
+
+
+def _coerce_datetime(value: str | datetime | int | float | None) -> datetime | None:
+    """Normalize provider timestamps into timezone-aware UTC datetimes."""
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    candidates = [text]
+    if text.endswith("Z"):
+        candidates.append(text[:-1] + "+00:00")
+
+    for candidate in dict.fromkeys(candidates):
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            try:
+                parsed = parsedate_to_datetime(candidate)
+            except (TypeError, ValueError, IndexError):
+                continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    return None
 
 
 class ResearchProviderError(Exception):
@@ -53,10 +96,7 @@ class ArxivResearchSource:
         results: list[SourceResult] = []
         for entry in root.findall("atom:entry", self.atom_namespace):
             published_text = entry.findtext("atom:published", default="", namespaces=self.atom_namespace)
-            try:
-                published_at = datetime.fromisoformat(published_text.replace("Z", "+00:00")) if published_text else None
-            except ValueError:
-                published_at = None
+            published_at = _coerce_datetime(published_text)
             results.append(SourceResult(
                 title=entry.findtext("atom:title", default="", namespaces=self.atom_namespace).strip() or None,
                 summary=entry.findtext("atom:summary", default="", namespaces=self.atom_namespace).strip() or None,
@@ -87,7 +127,7 @@ class NewsAPISource:
                 "apiKey": self.api_key,
                 "pageSize": limit,
                 "sortBy": "publishedAt",
-                "language": "en"
+                "language": "en",
             }
             response = requests.get(
                 self.endpoint,
@@ -97,19 +137,17 @@ class NewsAPISource:
             )
             response.raise_for_status()
             data = response.json()
-            
+
             if data.get("status") != "ok":
                 raise ResearchProviderError(f"NewsAPI error: {data.get('message', 'Unknown error')}")
-                
+
+            articles = data.get("articles")
+            if not isinstance(articles, list):
+                return []
+
             results: list[SourceResult] = []
-            for article in data.get("articles", []):
-                published_at = None
-                if article.get("publishedAt"):
-                    try:
-                        published_at = datetime.fromisoformat(article["publishedAt"].replace("Z", "+00:00"))
-                    except ValueError:
-                        pass
-                        
+            for article in articles:
+                published_at = _coerce_datetime(article.get("publishedAt"))
                 results.append(SourceResult(
                     title=article.get("title"),
                     summary=article.get("description"),
@@ -120,61 +158,61 @@ class NewsAPISource:
                     metadata={"provider": "newsapi", "author": article.get("author")},
                 ))
             return results
-            
+
         except requests.RequestException as exc:
             raise ResearchProviderError("NewsAPI service is unavailable") from exc
-        except (KeyError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise ResearchProviderError("NewsAPI response parsing failed") from exc
 
 
 class HackerNewsSource:
-    """Research source using Hacker News for technology and startup news."""
+    """Research source using the official Algolia-powered Hacker News search API."""
 
-    endpoint = "https://hacker-news.firebaseio.com/v0"
+    endpoint = "https://hn.algolia.com/api/v1/search"
 
     def __init__(self, timeout_seconds: float = 10) -> None:
         self.timeout_seconds = timeout_seconds
 
     def search(self, topic: str, *, limit: int = 10) -> list[SourceResult]:
         try:
-            # Search for stories by topic
-            search_url = f"{self.endpoint}/search"
-            params = {
-                "query": topic,
-                "limit": limit * 2,  # Get more results to filter
-            }
             response = requests.get(
-                search_url,
-                params=params,
+                self.endpoint,
+                params={
+                    "query": topic,
+                    "hitsPerPage": min(max(limit, 1), 50),
+                    "tags": "story",
+                },
                 timeout=self.timeout_seconds,
                 headers={"User-Agent": "ai-linkedin-content-agent/0.1 (research only)"},
             )
             response.raise_for_status()
             data = response.json()
-            
+
+            hits = data.get("hits")
+            if not isinstance(hits, list):
+                return []
+
             results: list[SourceResult] = []
-            for hit in data.get("hits", [])[:limit]:
-                published_at = None
-                if hit.get("created_at"):
-                    try:
-                        published_at = datetime.fromisoformat(hit["created_at"].replace("Z", "+00:00"))
-                    except ValueError:
-                        pass
-                        
+            for hit in hits[:limit]:
+                title = (hit.get("title") or "").strip()
+                if not title:
+                    continue
+                source_url = (hit.get("url") or hit.get("story_url") or "").strip() or None
+                published_at = _coerce_datetime(hit.get("created_at"))
                 results.append(SourceResult(
-                    title=hit.get("title"),
-                    summary=hit.get("url") or hit.get("title"),  # Use URL as summary if available
-                    source_url=hit.get("url"),
+                    title=title,
+                    summary=(hit.get("story_text") or hit.get("title") or source_url or "").strip() or title,
+                    source_url=source_url,
                     source_name="Hacker News",
                     source_type="tech_news",
                     published_at=published_at,
                     metadata={"provider": "hackernews", "points": hit.get("points"), "author": hit.get("author")},
                 ))
             return results
-            
+
         except requests.RequestException as exc:
             raise ResearchProviderError("Hacker News API is unavailable") from exc
-        except (KeyError, ValueError) as exc:
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
             raise ResearchProviderError("Hacker News response parsing failed") from exc
 
 
@@ -196,42 +234,36 @@ class TechCrunchSource:
             )
             response.raise_for_status()
             root = ElementTree.fromstring(response.content)
-            
+
             results: list[SourceResult] = []
             topic_lower = topic.lower()
-            
-            for item in root.findall(".//item"):
-                title = item.findtext("title", default="").strip()
-                description = item.findtext("description", default="").strip()
-                link = item.findtext("link", default="").strip()
-                
-                # Filter by topic relevance
+
+            for item in root.iter("item"):
+                title = (item.findtext("title", default="") or "").strip()
+                description = (item.findtext("description", default="") or "").strip()
+                link = (item.findtext("link", default="") or "").strip()
+
+                if not title:
+                    continue
                 if topic_lower not in title.lower() and topic_lower not in description.lower():
                     continue
-                    
-                published_at = None
-                pub_date = item.findtext("pubDate", default="")
-                if pub_date:
-                    try:
-                        published_at = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
-                    except ValueError:
-                        pass
-                        
+
+                published_at = _coerce_datetime(item.findtext("pubDate", default=""))
                 results.append(SourceResult(
                     title=title,
-                    summary=description,
-                    source_url=link,
+                    summary=description or title,
+                    source_url=link or None,
                     source_name="TechCrunch",
                     source_type="tech_news",
                     published_at=published_at,
                     metadata={"provider": "techcrunch"},
                 ))
-                
+
                 if len(results) >= limit:
                     break
-                    
+
             return results
-            
+
         except requests.RequestException as exc:
             raise ResearchProviderError("TechCrunch RSS feed is unavailable") from exc
         except ElementTree.ParseError as exc:

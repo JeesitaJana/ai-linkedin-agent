@@ -5,7 +5,7 @@ import pytest
 
 from app.models.research_item import ResearchItem
 from app.services.research import research_topics
-from app.services.research_sources import ResearchProviderError, SourceResult
+from app.services.research_sources import HackerNewsSource, ResearchProviderError, SourceResult, TechCrunchSource
 
 
 class FakeSource:
@@ -76,3 +76,84 @@ def test_one_source_failure_doesnt_break_others(db_session):
     items = research_topics(db_session, ["AI"], [FailingSource(), working_source], freshness_days=30)
     assert len(items) == 1
     assert items[0].source_url == "https://e.org/working"
+
+
+def test_hacker_news_source_uses_algolia_search(monkeypatch):
+    source = HackerNewsSource(timeout_seconds=5)
+
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return self._payload
+
+    def fake_get(url, params=None, timeout=None, headers=None):
+        captured["url"] = url
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return FakeResponse({
+            "hits": [{
+                "title": "Gemini Robotics",
+                "url": "https://example.com/robotics",
+                "created_at": "2026-07-30T15:15:48Z",
+                "points": 99,
+                "author": "testuser",
+            }]
+        })
+
+    monkeypatch.setattr("app.services.research_sources.requests.get", fake_get)
+    results = source.search("robotics", limit=5)
+
+    assert captured["url"] == "https://hn.algolia.com/api/v1/search"
+    assert captured["params"]["query"] == "robotics"
+    assert captured["params"]["tags"] == "story"
+    assert results[0].source_name == "Hacker News"
+    assert results[0].published_at is not None
+    assert results[0].published_at.tzinfo is not None
+
+
+def test_techcrunch_source_parses_rss_pubdate(monkeypatch):
+    source = TechCrunchSource(timeout_seconds=5)
+
+    rss_xml = b"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+    <rss version=\"2.0\">
+      <channel>
+        <item>
+          <title>Robotics is scaling in the real world</title>
+          <description>New autonomous systems are moving from labs to warehouses.</description>
+          <link>https://techcrunch.com/robotics-update</link>
+          <pubDate>Tue, 01 Sep 2026 23:59:59 +0000</pubDate>
+        </item>
+      </channel>
+    </rss>"""
+
+    class FakeResponse:
+        content = rss_xml
+        def raise_for_status(self):
+            return None
+
+    monkeypatch.setattr("app.services.research_sources.requests.get", lambda *args, **kwargs: FakeResponse())
+    results = source.search("robotics", limit=10)
+
+    assert len(results) == 1
+    assert results[0].published_at is not None
+    assert results[0].published_at.tzinfo is not None
+    assert results[0].published_at.year == 2026
+    assert results[0].source_url == "https://techcrunch.com/robotics-update"
+
+
+def test_malformed_provider_payloads_are_handled_gracefully(monkeypatch):
+    source = HackerNewsSource(timeout_seconds=5)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return {"hits": {"bad": "payload"}}
+
+    monkeypatch.setattr("app.services.research_sources.requests.get", lambda *args, **kwargs: FakeResponse())
+    assert source.search("robotics", limit=3) == []

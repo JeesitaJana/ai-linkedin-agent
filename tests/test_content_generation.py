@@ -14,6 +14,7 @@ from app.services.content_generation import (
     generate_post_from_research,
     get_content_generator,
 )
+from app.services.research_sources import SourceResult
 
 
 def test_mock_content_generator_generates_valid_content(db_session):
@@ -218,3 +219,37 @@ def test_hashtag_generation_for_different_topics(db_session):
     
     robotics_content = generator.generate_post([robotics_research], "robotics")
     assert "#Robotics" in robotics_content.hashtags or "#robotics" in robotics_content.hashtags
+
+
+def test_generate_post_endpoint_creates_unapproved_post(client, monkeypatch):
+    """Test the end-to-end generation route persists a post for GET /posts."""
+    from app.api.routes import content_generation as content_route
+
+    class FakeSource:
+        def search(self, topic, *, limit=10):
+            return [
+                SourceResult(
+                    title="Robot autonomy advances after new benchmark",
+                    summary="Researchers compare humanoid robot learning and safety across real-world trials.",
+                    source_url="https://example.com/robotics-benchmark",
+                    source_name="Robotics Lab",
+                    source_type="research_paper",
+                    published_at=datetime.now(timezone.utc),
+                    metadata={"provider": "test"},
+                )
+            ]
+
+    monkeypatch.setattr(content_route, "get_settings", lambda: type("Settings", (), {"research_timeout_seconds": 5, "research_window_days": 30})())
+    monkeypatch.setattr(content_route, "get_configured_source", lambda _: [FakeSource()])
+
+    response = client.post("/generate-post", json={"topics": ["robotics", "humanoid robots"], "freshness_days": 30})
+    assert response.status_code == 201
+    payload = response.json()
+    assert payload["approved"] is False
+    assert payload["title"]
+    assert payload["content"]
+    assert payload["hashtags"]
+
+    posts = client.get("/posts")
+    assert posts.status_code == 200
+    assert any(post["id"] == payload["id"] for post in posts.json())
