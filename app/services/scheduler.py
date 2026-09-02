@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from threading import Lock
 from zoneinfo import ZoneInfo
 
@@ -112,7 +112,7 @@ class ScheduleScheduler:
                 schedule_id=schedule.id,
                 schedule_name=schedule.name,
                 topics=list(schedule.topics),
-                triggered_at=datetime.now(UTC),
+                triggered_at=datetime.now(timezone.utc),
                 trigger="schedule",
             )
         self._events.append(event)

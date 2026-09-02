@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes import health, posts, research, schedules
+from app.api.routes.content_generation import router as content_generation_router
 from app.core.config import APP_DESCRIPTION, APP_TITLE, APP_VERSION
 from app.database.session import get_session_factory
 from app.services.scheduler import get_scheduler
@@ -28,3 +29,4 @@ app.include_router(health.router)
 app.include_router(posts.router)
 app.include_router(schedules.router)
 app.include_router(research.router)
+app.include_router(content_generation_router)
