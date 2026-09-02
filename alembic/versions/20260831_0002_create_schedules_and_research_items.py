@@ -26,8 +26,8 @@ def upgrade() -> None:
         sa.Column("timezone", sa.String(length=64), nullable=False),
         sa.Column("topics", sa.JSON(), nullable=False),
         sa.Column("active", sa.Boolean(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False),
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_schedules_id"), "schedules", ["id"], unique=False)
@@ -41,7 +41,7 @@ def upgrade() -> None:
         sa.Column("source_name", sa.String(length=200), nullable=False),
         sa.Column("source_url", sa.String(length=2048), nullable=False),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("discovered_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column("discovered_at", sa.DateTime(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False),
         sa.Column("relevance_score", sa.Float(), nullable=True),
         sa.Column("source_type", sa.String(length=100), nullable=False),
         sa.Column("metadata", sa.JSON(), nullable=False),
