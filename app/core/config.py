@@ -20,6 +20,8 @@ class Settings:
     research_timeout_seconds: float
     research_window_days: int
     content_generator: str
+    openai_api_key: str | None
+    openai_model: str
 
 
 @lru_cache
@@ -32,4 +34,6 @@ def get_settings() -> Settings:
         research_timeout_seconds=float(os.getenv("RESEARCH_TIMEOUT_SECONDS", "10")),
         research_window_days=int(os.getenv("RESEARCH_WINDOW_DAYS", "30")),
         content_generator=os.getenv("CONTENT_GENERATOR", "mock"),
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
     )

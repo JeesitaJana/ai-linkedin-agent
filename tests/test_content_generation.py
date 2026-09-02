@@ -253,3 +253,89 @@ def test_generate_post_endpoint_creates_unapproved_post(client, monkeypatch):
     posts = client.get("/posts")
     assert posts.status_code == 200
     assert any(post["id"] == payload["id"] for post in posts.json())
+
+
+def test_generate_post_with_missing_research_item_returns_404(client):
+    response = client.post("/generate-post", json={"research_item_ids": [999]})
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_generate_post_requires_topics_or_research_item_ids(client):
+    response = client.post("/generate-post", json={})
+    assert response.status_code == 400
+    assert "Either topics or research_item_ids" in response.json()["detail"]
+
+
+def test_generate_post_with_empty_research_context_returns_404(client, monkeypatch):
+    from app.api.routes import content_generation as content_route
+
+    monkeypatch.setattr(content_route, "get_settings", lambda: type("Settings", (), {"research_timeout_seconds": 5, "research_window_days": 30})())
+    monkeypatch.setattr(content_route, "get_configured_source", lambda _: [])
+    monkeypatch.setattr(content_route, "research_topics", lambda *args, **kwargs: [])
+
+    response = client.post("/generate-post", json={"topics": ["robotics"], "freshness_days": 30})
+    assert response.status_code == 404
+
+
+def test_generate_post_rejects_malformed_generator_output(db_session):
+    research_item = ResearchItem(
+        topic="robotics",
+        title="Robotics Research",
+        summary="Robotics summary",
+        source_name="Test Source",
+        source_url="https://example.com/robotics-test",
+        published_at=datetime.now(timezone.utc),
+        discovered_at=datetime.now(timezone.utc),
+        relevance_score=0.8,
+        source_type="research_paper",
+        metadata_json={},
+    )
+    db_session.add(research_item)
+    db_session.flush()
+
+    class BrokenGenerator:
+        def generate_post(self, research_items, topic, instructions=None):
+            return GeneratedContent(title="", content="Valid content with no title", hashtags=["#Robotics"])
+
+    import app.services.content_generation as cg_module
+    original_get = cg_module.get_content_generator
+    cg_module.get_content_generator = lambda: BrokenGenerator()
+
+    try:
+        with pytest.raises(ContentGenerationError, match="invalid|failed|title"):
+            generate_post_from_research(db_session, [research_item], "robotics")
+    finally:
+        cg_module.get_content_generator = original_get
+
+
+def test_openai_generator_failure_is_raised_cleanly(monkeypatch):
+    import sys
+    import types
+
+    class FakeClient:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(*args, **kwargs):
+                    raise RuntimeError("openai timed out")
+
+    fake_module = types.SimpleNamespace(OpenAI=lambda api_key: FakeClient())
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    research_item = ResearchItem(
+        topic="robotics",
+        title="Robotics Research",
+        summary="Robotics summary",
+        source_name="Test Source",
+        source_url="https://example.com/openai-fail",
+        published_at=datetime.now(timezone.utc),
+        discovered_at=datetime.now(timezone.utc),
+        relevance_score=0.8,
+        source_type="research_paper",
+        metadata_json={},
+    )
+
+    with pytest.raises(ContentGenerationError, match="OpenAI content generation failed"):
+        OpenAIContentGenerator().generate_post([research_item], "robotics")
